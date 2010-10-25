@@ -1,0 +1,53 @@
+sc2replay parser
+
+reads meta data out of starcraft 2 replay files.
+
+Description of data format:
+
+The data blocks that are being decoded follow the following basic layout.
+
+TYPE:[Possible Additonal information (such as data length):DATA
+
+Type Codes:
+    Scalar Types:
+        Static Length:
+            06 - Byte
+            07 - Integer
+        Variable Length:
+            02 - Binary Blob
+            09 - SDNV (Self-Delimiting Numeric Value)
+    Composite Types:
+        04 - Array
+        05 - Dictionary
+
+Binary Blobs:
+    02:SDNV Encoded Length:Data Bytes
+    Example: 02 08 6E 69 6C 73
+        Length: 4
+        Data: (ASCII String) Nils
+
+Arrays:
+    02:01 00:SDNV Encoded Length:[Data block] * length
+    Arrays seem to always contain a two byte value 01 00 at the beginning
+    right after the array type byte. Don't know if this value represents
+    something significant though.
+
+    Example: 02 01 00 08 09 02 09 02 09 02 09 02
+        Array of SDNV's
+        {1, 1, 1, 1}
+
+Dictionaries:
+    05:SDNV Encoded Length:[SDNV Encoded Key:Data block] * length
+
+Integers:
+    07:Integer value
+    Example: 07 00 00 53 32
+
+SDNV:
+    09:SDNV Encoded Value
+    These numeric values are encoded using an algorithm very similar to:
+    http://tools.ietf.org/html/draft-irtf-dtnrg-sdnv-07
+    Differences:
+        - Replays contain encoded bytes in opposite byte order.
+        - Replays encode signedness by left shifting input value
+          and using right most bit to indicate sign.
