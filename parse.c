@@ -31,6 +31,14 @@ char peek(struct info *mpq)
 }
 
 /*
+ * Peek at byte i bytes ahead without updating offset
+ */
+char peek_ahead(struct info *mpq, int i)
+{
+    return mpq->buf[mpq->offset + i];
+}
+
+/*
  * Peek at the next two bytes without updating offset
  */
 short peek_short(struct info *mpq)
@@ -269,17 +277,29 @@ void print_data(struct data_block *data)
 }
 
 /*
+ * Get File number for mpq file
+ */
+int get_fileno(struct info *mpq, char *file)
+{
+    int fn;
+    libmpq__file_number(mpq->archive, file, &fn);
+    return fn;
+}
+
+/*
  * Use libmpq to read info file from replay archive
  */
-int load_mpq_info(struct info *mpq, char *file)
+int load_mpq_info(struct info *mpq, char *ifile, char *file)
 {
+    int fd;
     mpq->offset = 0;
     libmpq__archive_open(&mpq->archive, file, -1);
-    libmpq__file_unpacked_size(mpq->archive, 0, &mpq->size);
+    fd = get_fileno(mpq, ifile);
+    libmpq__file_unpacked_size(mpq->archive, fd, &mpq->size);
     if (mpq->size < 1)
         return 0;
     mpq->buf = malloc(mpq->size);
-    libmpq__file_read(mpq->archive, 0, mpq->buf, mpq->size, NULL);
+    libmpq__file_read(mpq->archive, fd, mpq->buf, mpq->size, NULL);
     libmpq__archive_close(mpq->archive);
     return 1;
 }
@@ -351,14 +371,16 @@ void load_header(struct data_block *data, struct header *hdr)
  * Load player data
  * NOTE: Currently prints out the player data as well for testing
  */
-void load_players(struct data_block *data, struct player **players)
+void load_players(struct data_block *data, struct player **players[])
 {
     struct player *pp = NULL;
+    struct player **parr = NULL;
     struct data_block *pa = NULL, *dp = NULL, *player_array, *cur = NULL, *cur2 = NULL;
     int nplayers = 0, i;
     
     player_array = get_dict_index(data, 0);
     nplayers = player_array->size;
+    parr = malloc(sizeof(struct player *) * nplayers);
 
     for (i = 0; i < nplayers; ++i) {
         pp = malloc(sizeof(struct player));
@@ -392,9 +414,59 @@ void load_players(struct data_block *data, struct player **players)
         pp->team = *(int *)cur->data;
 
         printf("%s:%s:#%02x%02x%02x:%d\n", pp->name, pp->race, pp->color[0], pp->color[1], pp->color[2], pp->team);
+        parr[i] = pp;
     }
 
+    *players = parr;
 
+}
+
+void parse_messages(struct info *mpq, struct player **players)
+{
+    int offset, i, t, timestamp = 0;
+    char *message, player, channel, length;
+
+    /*mpq->offset = 0x149;*/
+    while((peek_ahead(mpq, 2) & 0xFF) == 0x80) {
+        mpq->offset += 7;
+    }
+
+    while(mpq->offset < mpq->size) {
+        t = next(mpq) & 0xFF;
+        offset = t >> 2;
+        t &= 0x3;
+        if (t == 1) {
+            offset = (offset << 8) | (next(mpq) & 0xFF);
+        } else if (t == 2) {
+            offset = (offset << 16) | (next(mpq) & 0xFF);
+            offset = (offset << 8) | (next(mpq) & 0xFF);
+        }
+        timestamp += offset;
+
+        player = (next(mpq) & 0xFF) - 1;
+        channel = next(mpq) & 0xFF;
+        if ((channel & 0xFF) == 0x83) {
+            mpq->offset += 8;
+            printf("%x:%s:%d:%d:<PING>\n", timestamp, players[player]->name, channel, length);
+        } else {
+            length = next(mpq) & 0xFF;
+            if ((channel & 0x08)) {
+                length += 64;
+            }
+            message = malloc(sizeof(char) * (length + 1));
+            message[length] = '\0';
+            for (i = 0; i < length; ++i) {
+                message[i] = next(mpq);
+            }
+            printf("%x:%s:%d:%d:%s\n", timestamp, players[player]->name, channel, length, message);
+            free(message);
+        }
+    }
+}
+
+void parse_actions(struct info *mpq, struct player **players)
+{
+    return;
 }
 
 /*
@@ -411,7 +483,7 @@ int main(int argc, char **argv)
     char buf[1024];
     int fp, c, mode;
 
-   while ((c = getopt (argc, argv, "rdf")) != -1) {
+   while ((c = getopt (argc, argv, "rdflm")) != -1) {
          switch (c)
            {
            case 'r':
@@ -423,6 +495,12 @@ int main(int argc, char **argv)
            case 'f':
              mode = 3;
              break;
+           case 'l':
+            mode = 4;
+            break;
+            case 'm':
+                mode = 5;
+                break;
            case '?':
              if (isprint (optopt))
                fprintf (stderr, "Unknown option `-%c'.\n", optopt);
@@ -438,7 +516,8 @@ int main(int argc, char **argv)
 
     switch (mode) {
         case 1:
-            if (!load_mpq_info(&mpq, argv[optind])) {
+            //if (!load_mpq_info(&mpq, "replay.details", argv[optind])) {
+            if (!load_mpq_info(&mpq, "replay.message.events", argv[optind])) {
                 printf("Unable to load replay file\n");
                 return 1;
             }
@@ -452,7 +531,7 @@ int main(int argc, char **argv)
             header.buf = buf;
             header.size = 1024;
 
-            if (!load_mpq_info(&mpq, argv[optind])) {
+            if (!load_mpq_info(&mpq, "replay.details", argv[optind])) {
                 printf("Unable to load replay file\n");
                 return 1;
             }
@@ -463,14 +542,14 @@ int main(int argc, char **argv)
             print_data(&data);
             break;
         case 3:
-            fp = open(argv[1], 'r');
+            fp = open(argv[optind], 'r');
             lseek(fp, 0x10, SEEK_SET);
             read(fp, buf, 1024);
             header.offset = 0;
             header.buf = buf;
             header.size = 1024;
 
-            if (!load_mpq_info(&mpq, argv[optind])) {
+            if (!load_mpq_info(&mpq, "replay.details", argv[optind])) {
                 printf("Unable to load replay file\n");
                 return 1;
             }
@@ -479,10 +558,51 @@ int main(int argc, char **argv)
             load_header(&data, &hdr);
             read_data(&mpq, &data);
             load_map(&data, &map);
-            load_players(&data, players);
+            load_players(&data, &players);
+            printf("###\n");
+            if (!load_mpq_info(&mpq, "replay.message.events", argv[optind])) {
+                printf("Unable to load replay file\n");
+                return 1;
+            }
+            parse_messages(&mpq, players);
+            break;
+        case 4:
+        {
+           char *filename, *file;
+           int total_files, i;
+           off_t size;
+           mpq_archive_s *archive;
+           libmpq__archive_open(&archive, argv[optind], -1);
+           libmpq__archive_files(archive, &total_files);
+           printf("Number of files: %d\n", total_files);
+           libmpq__file_number(archive, "replay.game.events", &total_files);
+           printf("game events number: %d\n", total_files);
+           libmpq__file_number(archive, "replay.message.events", &total_files);
+           printf("message events number: %d\n", total_files);
+           libmpq__file_number(archive, "(listfile)", &total_files);
+           printf("listfile number: %d\n", total_files);
+           libmpq__file_unpacked_size(archive, total_files, &size);
+           file = malloc(size);
+           libmpq__file_read(archive, total_files, file, size, NULL);
+           write(1, file, size);
+        }
+            break;
+        case 5:
+            if (!load_mpq_info(&mpq, "replay.details", argv[optind])) {
+                printf("Unable to load replay file\n");
+                return 1;
+            }
+
+            read_data(&mpq, &data);
+            load_players(&data, &players);
+            if (!load_mpq_info(&mpq, "replay.message.events", argv[optind])) {
+                printf("Unable to load replay file\n");
+                return 1;
+            }
+            parse_messages(&mpq, players);
+            break;
     }            
 
     return 0;
 
 }
-

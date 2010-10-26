@@ -60,13 +60,13 @@ void print_depth(int depth);
 void read_data(struct info *mpq, struct data_block *data);
 void print_binary(int size, char *data);
 void print_data(struct data_block *data);
-int load_mpq_info(struct info *mpq, char *file);
+int load_mpq_info(struct info *mpq, char *ifile, char *file);
 struct data_block *get_dict_index(struct data_block *dict, int index);
 struct data_block *get_array_index(struct data_block *arr, int index);
 
 void load_map(struct data_block *data, struct map *map);
 void load_header(struct data_block *data, struct header *hdr);
-void load_players(struct data_block *data, struct player **players);
+void load_players(struct data_block *data, struct player ***players);
 
 #endif
 
